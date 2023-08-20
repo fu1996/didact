@@ -2,6 +2,15 @@
 
 # Didact
 
+#### Branch Introduction （分支介绍）
+
+The development branch is the basic branch that contains the true React, while the master branch is completed.
+
+You can learn based on the development branch combined with documentation. If you encounter problems, you can switch to the master branch to view the complete code.
+
+> develop 分支是包含了真正的React 的基础分支，master 分支是完成完成。
+> 你可以基于develop 分支结合文档进行学习，如果遇到问题可以切换到 master分支查看完整代码。
+
 #### A DIY guide to build your own React
 
 This repository goes together with a [series of posts](https://engineering.hexacta.com/didact-learning-how-react-works-by-building-it-from-scratch-51007984e5c5) that explains how to build React from scratch step by step. **You can jump straight to [the last post](https://pomb.us/build-your-own-react) which is self-contained and includes everything.**
