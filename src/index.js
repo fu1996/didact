@@ -1,10 +1,5 @@
 /**
- * 在V2的版本中，任务调度节点和节点渲染是在同一阶段的，可能存在一次循环渲染不完全的情况。
- * 在当前的版本下，将任务调度和渲染节点进行分离，
- * 实现浏览器的多次空闲时间去处理 fiber节点，
- * 但是只有一次commit 到 真实DOM的过程，进而解决了渲染不完全的情况。
- *
- * 缺陷：目前仅仅实现了 DOM节点的新增，未实现更新和删除，V4部分要去实现更新和删除。
+ * v4版本去解决v3版本中未实现的更新和删除操作
  */
 
 const SPECIAL_TYPE = {
@@ -45,7 +40,10 @@ function createTextElement(text) {
   };
 }
 // 只把当前虚拟DOM的prop筛选出来
-const isProperty = (key) => key !== "children";
+const isEvent = (key) => key.startsWith("on");
+const isProperty = (key) => key !== "children" && !isEvent(key);
+const isNew = (prev, next) => (key) => prev[key] !== next[key];
+const isGone = (prev, next) => (key) => !(key in next);
 
 function createDom(fiber) {
   // 根据虚拟DOM类型创建真实DOM
@@ -54,12 +52,7 @@ function createDom(fiber) {
       ? document.createTextNode("")
       : document.createElement(fiber.type);
 
-  Object.keys(fiber?.props)
-    .filter(isProperty)
-    .forEach((name) => {
-      // 虚拟DOM的 props 绑定到真实 DOM上
-      dom[name] = fiber.props[name];
-    });
+  updateDom(dom, {}, fiber.props);
 
   return dom;
 }
@@ -68,14 +61,22 @@ function createDom(fiber) {
 let nextUnitOfWork = null;
 // 循环更新的节点 work in progress root
 let wipRoot = null;
+// 当前的工作节点
+let currentRoot = null;
+// 记录删除的数组
+let deletions = null;
 
 /**
  * 一次性将当前fiber节点的变更，更新为 真实的 DOM
  */
 function commitRoot() {
+  deletions.forEach(commitWork);
   commitWork(wipRoot.child);
+  // 暂存当前 fiber节点到 currentRoot
+  currentRoot = wipRoot;
+  // 循环更新的节点 置为空
   wipRoot = null;
-  console.log("渲染结束", wipRoot);
+console.log("渲染结束", wipRoot);
 }
 
 /**
@@ -85,9 +86,51 @@ function commitRoot() {
 function commitWork(fiber) {
   if (!fiber) return;
   const domParent = fiber.parent.dom;
-  domParent.appendChild(fiber.dom);
+  if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
+    domParent.appendChild(fiber.dom);
+  } else if (fiber.effectTag === "UPDATE" && fiber.dom != null) {
+    updateDom(fiber.dom, fiber.alternate.props, fiber.props);
+  } else if (fiber.effectTag === "DELETION") {
+    domParent.removeChild(fiber.dom);
+  }
   commitWork(fiber.child);
   commitWork(fiber.sibling);
+}
+
+function updateDom(dom, prevProps, nextProps) {
+  //Remove old or changed event listeners
+  Object.keys(prevProps)
+    .filter(isEvent)
+    .filter((key) => !(key in nextProps) || isNew(prevProps, nextProps)(key))
+    .forEach((name) => {
+      const eventType = name.toLowerCase().substring(2);
+      dom.removeEventListener(eventType, prevProps[name]);
+    });
+
+  // Remove old properties
+  Object.keys(prevProps)
+    .filter(isProperty)
+    .filter(isGone(prevProps, nextProps))
+    .forEach((name) => {
+      dom[name] = "";
+    });
+
+  // Set new or changed properties
+  Object.keys(nextProps)
+    .filter(isProperty)
+    .filter(isNew(prevProps, nextProps))
+    .forEach((name) => {
+      dom[name] = nextProps[name];
+    });
+
+  // Add event listeners
+  Object.keys(nextProps)
+    .filter(isEvent)
+    .filter(isNew(prevProps, nextProps))
+    .forEach((name) => {
+      const eventType = name.toLowerCase().substring(2);
+      dom.addEventListener(eventType, nextProps[name]);
+    });
 }
 
 /**
@@ -103,7 +146,10 @@ function render(element, container) {
     props: {
       children: Array.isArray(element) ? [...element] : [element],
     },
+    alternate: currentRoot,
   };
+  // 新增记录删除的数组
+  deletions = [];
   nextUnitOfWork = wipRoot;
 }
 
@@ -133,6 +179,59 @@ function workLoop(deadline) {
 // 类似于setTimeout，但是触发的时机 是浏览器 空闲时候进行调用一次。
 requestIdleCallback(workLoop);
 
+function reconcileChildren(wipFiber, elements) {
+  let index = 0;
+  let oldFiber = wipFiber.alternate && wipFiber.alternate.child;
+  let prevSibling = null;
+  // 处理子节点
+  while (index < elements.length || oldFiber != null) {
+    const element = elements[index];
+    let newFiber = null;
+    // 老 fiber 节点和当前节点是否是同一类型
+    const sameType = oldFiber && element && element.type == oldFiber.type;
+    // 如果旧节点和新节点的类型相同
+    if (sameType) {
+      newFiber = {
+        type: oldFiber.type,
+        props: element.props,
+        dom: oldFiber.dom,
+        parent: wipFiber,
+        alternate: oldFiber,
+        effectTag: "UPDATE",
+      };
+    }
+    // 当前节点存在，但是和老fiber节点的类型不同 做替换
+    if (element && !sameType) {
+      newFiber = {
+        type: element.type,
+        props: element.props,
+        dom: null,
+        parent: wipFiber,
+        alternate: null,
+        effectTag: "PLACEMENT",
+      };
+    }
+    // 旧 fiber节点存在 但是不和当前节点类型相同 做删除
+    if (oldFiber && !sameType) {
+      oldFiber.effectTag = "DELETION";
+      deletions.push(oldFiber);
+    }
+    // 旧 fiber节点的 相邻节点存在，将其赋值给 旧 fiber节点，实现下次遍历 从 旧fiber节点开始
+    if (oldFiber) {
+      oldFiber = oldFiber.sibling;
+    }
+
+    // 当前是第一个节点，child 绑定到自身
+    if (index === 0) {
+      wipFiber.child = newFiber;
+    } else if (element) {
+      prevSibling.sibling = newFiber;
+    }
+    prevSibling = newFiber;
+    index++;
+  }
+}
+
 /**
  * 在浏览器的一次循环中处理当前的vdom节点渲染到界面上，并返回下一个工作单元
  * @param {*} nextUnitOfWork
@@ -144,32 +243,8 @@ function performUnitOfWork(fiber) {
   }
   // 遍历子节点，继续执行 children 属性来自于 createElement 函数。
   const elements = fiber.props.children;
-  let index = 0;
-  // 定义其父级的兄弟节点
-  let prevSibling = null;
-  // 处理子节点
-  while (index < elements.length) {
-    const element = elements[index];
-    // 创建 element 元素对应的 fiber 工作单元
-    const newFiber = {
-      type: element.type,
-      props: element.props,
-      parent: fiber, // 指向其父级 fiber 节点
-      dom: null, // 代表还没创建和挂载 DOM 节点
-    };
-    // 当前是第一个节点，child 绑定到自身，查找规则是 当前工作节点下的第一个节点
-    if (index === 0) {
-      fiber.child = newFiber;
-    } else {
-      // 绑定其兄弟节点
-      prevSibling.sibling = newFiber;
-    }
-    // 新的 fiber节点 成为了 上一个兄弟节点
-    prevSibling = newFiber;
-    // 继续下一个工作
-    index++;
-  }
-  console.log("处理完子节点以后的结果为", fiber);
+  // 调和fiber节点
+  reconcileChildren(fiber, elements);
   // 存在子节点，返回子节点
   if (fiber.child) {
     return fiber.child;
@@ -192,10 +267,20 @@ const Didact = {
 };
 
 /** @jsx Didact.createElement */
-const element = new Array(10000).fill("hello").map((item, index) => (
-  <div key={index}>
-    <h1>Hello World {index}</h1>
-  </div>
-));
 const container = document.getElementById("root");
-Didact.render(element, container);
+
+const updateValue = (e) => {
+  rerender(e.target.value);
+};
+
+const rerender = (value) => {
+  const element = (
+    <div style={{ background: "pink" }}>
+      <input onInput={updateValue} value={value} />
+      <h2>Hello {value}</h2>
+    </div>
+  );
+  Didact.render(element, container);
+};
+
+rerender("World");
