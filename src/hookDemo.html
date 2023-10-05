@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+
+<body>
+    <h3>React useState 案例</h3>
+    <div>组件1：<span class="count1">0</span></div>
+    <button class="btn1">组件1 add 1 (function State)</button>
+    <div>组件2：<span class="count2">0</span></div>
+    <button class="btn2">组件2 add 1 (merge state)</button>
+    <h3>调度开始</h3>
+    <div>当前队列任务：<span class="number">0</span></div>
+    <button class="btn3">调度开始</button>
+    <script type="text/javascript">
+        // 获取元素
+        var count1 = document.querySelector(".count1");
+        var count2 = document.querySelector(".count2");
+        var btn1 = document.querySelector(".btn1");
+        var btn2 = document.querySelector(".btn2");
+        var btn3 = document.querySelector(".btn3");
+        var number = document.querySelector(".number");
+        console.log('start')
+        // 存储state的值
+        let stateArray = [];
+        // 存储 修改 state 方法 的队列
+        let queueState = [];
+        // 存储 渲染 的队列
+        let queueRender = [];
+        /**
+         *  伪 useState
+         *  @param {String} initState 初始状态
+         *  @param {Function} render 渲染函数
+         *  @param {Number} index 索引
+         *
+         */
+        const useState = (initState, render, index) => {
+            if (stateArray[index] === undefined) {
+                stateArray[index] = initState;
+            }
+            const setState = (newState) => {
+                const stateData = {
+                    index: index,
+                    newState: newState,
+                }
+                const renderData = {
+                    index: index,
+                    render: render,
+                }
+                queueRender.push(renderData)
+                queueState.push(stateData);
+                number.innerHTML = queueState.length;
+            }
+            return [stateArray[index], setState];
+        }
+
+        btn1.addEventListener("click",
+            () => {
+                const [_, setCountState] = useState(0,
+                    (newState) => {
+                        count1.innerHTML = newState;
+                    },
+                    0
+                );
+                setCountState((prevState) => prevState + 1);
+            }
+        );
+        btn2.addEventListener("click",
+            () => {
+                const [countState, setCountState] = useState(0,
+                    (newState) => {
+                        count2.innerHTML = newState;
+                    }, 1
+                );
+                setCountState(countState + 1);
+            }
+        );
+        function clearQueue() {
+            queueRender.length = 0;
+            queueState.length = 0;
+            number.innerHTML = queueState.length;
+        }
+        btn3.addEventListener("click", () => {
+            // 调度 队列
+            queueState.forEach(queue => {
+                console.log('queue', queue)
+                const { index, newState } = queue;
+                stateArray[index] = typeof newState === 'function' ? newState(stateArray[index]) : newState;
+            })
+            queueRender.forEach(renderItem => {
+                renderItem.render(stateArray[renderItem.index])
+            });
+            clearQueue();
+        })
+
+    </script>
+</body>
+
+</html>

@@ -66,6 +66,12 @@ let currentRoot = null;
 // 记录删除的数组
 let deletions = null;
 
+// 函数组件专用
+// 记录当前工作的fiber节点 work in fiber
+let wipFiber = null;
+// 记录当前函数组件执行的 hook的索引 （这样一个函数组件可以支持多次 useState 调用）
+let hookIndex = null;
+
 /**
  * 一次性将当前fiber节点的变更，更新为 真实的 DOM
  */
@@ -76,7 +82,7 @@ function commitRoot() {
   currentRoot = wipRoot;
   // 循环更新的节点 置为空
   wipRoot = null;
-console.log("渲染结束", wipRoot);
+  console.log("渲染结束", wipRoot);
 }
 
 /**
@@ -85,16 +91,32 @@ console.log("渲染结束", wipRoot);
  */
 function commitWork(fiber) {
   if (!fiber) return;
-  const domParent = fiber.parent.dom;
+  // 找到当前 fiber 节点的挂载点
+  let domParentFiber = fiber.parent;
+  while (!domParentFiber.dom) {
+    // 如果不存在，那就一直向上找
+    domParentFiber = domParentFiber.parent;
+  }
+  const domParent = domParentFiber.dom;
   if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
     domParent.appendChild(fiber.dom);
   } else if (fiber.effectTag === "UPDATE" && fiber.dom != null) {
     updateDom(fiber.dom, fiber.alternate.props, fiber.props);
   } else if (fiber.effectTag === "DELETION") {
-    domParent.removeChild(fiber.dom);
+    // domParent.removeChild(fiber.dom);
+    commitDeletion(fiber, domParent);
   }
   commitWork(fiber.child);
   commitWork(fiber.sibling);
+}
+
+function commitDeletion(fiber, domParent) {
+  if (fiber.dom) {
+    domParent.removeChild(fiber.dom);
+  } else {
+    // 持续向下找，直到找到为止
+    commitDeletion(fiber.child, domParent);
+  }
 }
 
 function updateDom(dom, prevProps, nextProps) {
@@ -233,10 +255,26 @@ function reconcileChildren(wipFiber, elements) {
 }
 
 /**
- * 在浏览器的一次循环中处理当前的vdom节点渲染到界面上，并返回下一个工作单元
- * @param {*} nextUnitOfWork
+ * 处理 函数组件的方法，其 children 是其函数的返回值
+ * @param {*} fiber 
  */
-function performUnitOfWork(fiber) {
+function updateFunctionComponent(fiber) {
+  // 记录当前工作的函数组件节点
+  wipFiber = fiber
+  // 默认是第0个hook
+  hookIndex = 0
+  // 初始化当前函数组件的 hooks 队列，以便存储当前 fiber 的 hook
+  wipFiber.hooks = []
+  // 接受传入的props，执行函数组件，返回其对应的 fiber 节点，期间会执行 useState hook
+  const children = [fiber.type(fiber.props)];
+  reconcileChildren(fiber, children);
+}
+
+/**
+ * 保持原有的 jsx 处理逻辑
+ * @param {*} fiber 
+ */
+function updateHostComponent(fiber) {
   // 当前fiber节点 不存在真实DOM，生成一个真实的DOM
   if (!fiber.dom) {
     fiber.dom = createDom(fiber);
@@ -245,6 +283,21 @@ function performUnitOfWork(fiber) {
   const elements = fiber.props.children;
   // 调和fiber节点
   reconcileChildren(fiber, elements);
+}
+
+/**
+ * 在浏览器的一次循环中处理当前的vdom节点渲染到界面上，并返回下一个工作单元
+ * @param {*} nextUnitOfWork
+ */
+function performUnitOfWork(fiber) {
+  // 是否是函数组件
+  const isFunctionComponent = fiber.type instanceof Function;
+  
+  if (isFunctionComponent) {
+    updateFunctionComponent(fiber);
+  } else {
+    updateHostComponent(fiber);
+  }
   // 存在子节点，返回子节点
   if (fiber.child) {
     return fiber.child;
@@ -261,26 +314,55 @@ function performUnitOfWork(fiber) {
   }
 }
 
+function useState(initial) {
+  // 获取 旧fiber 节点的对应的 hook
+  const oldHook =
+    wipFiber.alternate &&
+    wipFiber.alternate.hooks &&
+    wipFiber.alternate.hooks[hookIndex]
+  const hook = {
+    // 如果旧fiber节点存在，就使用旧的 state，如果不存在，就使用初始化的 state
+    state: oldHook ? oldHook.state : initial,
+    queue: [],
+  };
+  // 首先看下当前hook中是否有任务要执行，
+  const actions = oldHook ? oldHook.queue : [];
+  // 存在任务 就进行执行
+  actions.forEach((action) => {
+    hook.state = action(hook.state);
+  });
+  const setState = (action) => {
+    // 存入 当前 hook 的 队列中
+    hook.queue.push(action);
+    // 从根节点开始持续向下进行更新，以便能正确的处理hook
+    wipRoot = {
+      dom: currentRoot.dom,
+      props: currentRoot.props,
+      alternate: currentRoot,
+    };
+    nextUnitOfWork = wipRoot;
+    // 无需任何的deletions处理
+    deletions = [];
+  };
+  // 存入当前fiber节点的 hooks 队列中。
+  wipFiber.hooks.push(hook)
+  // 当前 fiber节点 hook 索引 + 1
+  hookIndex++
+  return [hook.state, setState];
+}
+
 const Didact = {
   createElement,
   render,
+  useState,
 };
 
 /** @jsx Didact.createElement */
+function Counter() {
+  console.log('render');
+  const [state, setState] = Didact.useState(1);
+  return <h1 onClick={() => setState((c) => c + 1)}>Count: {state}</h1>;
+}
+const element = <Counter />;
 const container = document.getElementById("root");
-
-const updateValue = (e) => {
-  rerender(e.target.value);
-};
-
-const rerender = (value) => {
-  const element = (
-    <div style={{ background: "pink" }}>
-      <input onInput={updateValue} value={value} />
-      <h2>Hello {value}</h2>
-    </div>
-  );
-  Didact.render(element, container);
-};
-
-rerender("World");
+Didact.render(element, container);
